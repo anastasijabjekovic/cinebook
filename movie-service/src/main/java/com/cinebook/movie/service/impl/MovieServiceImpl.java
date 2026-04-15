@@ -1,7 +1,9 @@
 package com.cinebook.movie.service.impl;
 
+import com.cinebook.movie.client.UserClient;
 import com.cinebook.movie.dto.CreateMovieRequest;
 import com.cinebook.movie.dto.MovieResponse;
+import com.cinebook.movie.dto.MovieWithUserResponse;
 import com.cinebook.movie.entity.Movie;
 import com.cinebook.movie.exception.MovieNotFoundException;
 import com.cinebook.movie.repository.MovieRepository;
@@ -13,6 +15,8 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 
@@ -22,6 +26,7 @@ import java.util.List;
 public class MovieServiceImpl implements MovieService {
 
     private final MovieRepository movieRepository;
+    private final UserClient       userClient;
 
     @Override
     @Transactional(readOnly = true)
@@ -63,5 +68,25 @@ public class MovieServiceImpl implements MovieService {
         Movie saved = movieRepository.save(movie);
         log.info("Created movie id={} title={}", saved.getId(), saved.getTitle());
         return MovieResponse.from(saved);
+    }
+
+    @Override
+    public Mono<MovieWithUserResponse> getMovieWithUser(Long movieId, Long userId) {
+        /*
+         * Wrap the blocking DB/cache call in boundedElastic so it doesn't
+         * block the event-loop thread used by the reactive pipeline.
+         * Mono.zip subscribes to both publishers concurrently, so the
+         * user-service HTTP call and the movie lookup run in parallel.
+         */
+        Mono<MovieResponse> movieMono = Mono
+                .fromCallable(() -> getMovieById(movieId))
+                .subscribeOn(Schedulers.boundedElastic());
+
+        Mono<com.cinebook.movie.dto.UserDto> userMono = userClient.getUserById(userId);
+
+        return Mono.zip(movieMono, userMono)
+                .map(tuple -> new MovieWithUserResponse(tuple.getT1(), tuple.getT2()))
+                .doOnSuccess(r -> log.debug(
+                        "Assembled MovieWithUserResponse: movieId={}, userId={}", movieId, userId));
     }
 }

@@ -4,53 +4,170 @@ server:
 spring:
   application:
     name: api-gateway
+
   cloud:
     gateway:
+
+      # ── Global filters applied to every route ──────────────────────────────
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
+        - name: RequestSize
+          args:
+            maxSize: 5MB
+
+      # ── Global CORS ────────────────────────────────────────────────────────
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: [ GET, POST, PUT, PATCH, DELETE, OPTIONS ]
+            allowedHeaders: "*"
+            allowCredentials: true
+            maxAge: 3600
+
+      # ── Service discovery auto-routing (fallback for unmatched paths) ──────
       discovery:
         locator:
-          enabled: true
-          lower-case-service-id: true
+          enabled: false          # explicit routes are preferred; set true for auto-discovery
+
+      # ── Routes ─────────────────────────────────────────────────────────────
       routes:
+
+        # user-service:  /api/users/** → http://user-service/users/**
         - id: user-service
           uri: lb://user-service
           predicates:
             - Path=/api/users/**
           filters:
-            - StripPrefix=1
+            - StripPrefix=1       # strips /api → /users/...
+            - name: CircuitBreaker
+              args:
+                name: user-service-cb
+                fallbackUri: forward:/fallback/user-service
 
+        # movie-service: /api/movies/** → http://movie-service/movies/**
         - id: movie-service
           uri: lb://movie-service
           predicates:
             - Path=/api/movies/**
           filters:
             - StripPrefix=1
+            - name: CircuitBreaker
+              args:
+                name: movie-service-cb
+                fallbackUri: forward:/fallback/movie-service
 
+        # booking-service: /api/bookings/** → http://booking-service/bookings/**
         - id: booking-service
           uri: lb://booking-service
           predicates:
             - Path=/api/bookings/**
           filters:
             - StripPrefix=1
+            - name: CircuitBreaker
+              args:
+                name: booking-service-cb
+                fallbackUri: forward:/fallback/booking-service
 
+        # notification-service: /api/notifications/** → http://notification-service/notifications/**
         - id: notification-service
           uri: lb://notification-service
           predicates:
             - Path=/api/notifications/**
           filters:
             - StripPrefix=1
+            - name: CircuitBreaker
+              args:
+                name: notification-service-cb
+                fallbackUri: forward:/fallback/notification-service
 
+  # Jackson - ISO-8601 timestamps
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+# ── Eureka ─────────────────────────────────────────────────────────────────
 eureka:
   client:
     service-url:
       defaultZone: http://localhost:8761/eureka/
   instance:
     prefer-ip-address: true
+    instance-id: ${spring.application.name}:${random.value}
 
+# ── Actuator ───────────────────────────────────────────────────────────────
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,gateway
+        include: health, info, prometheus, metrics, gateway, loggers
+      base-path: /actuator
   endpoint:
     health:
       show-details: always
+      show-components: always
+    gateway:
+      enabled: true              # exposes /actuator/gateway/routes
+    prometheus:
+      enabled: true
+
+  # ── Prometheus / Micrometer ───────────────────────────────────────────────
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+  # ── Distributed Tracing (Micrometer Tracing + Brave + Zipkin) ─────────────
+  tracing:
+    sampling:
+      probability: 1.0
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_URL:http://localhost:9411}/api/v2/spans
+
+# ── Resilience4j circuit breakers ─────────────────────────────────────────
+resilience4j:
+  circuitbreaker:
+    instances:
+      user-service-cb:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+      movie-service-cb:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+      booking-service-cb:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+      notification-service-cb:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+
+# ── Info endpoint ──────────────────────────────────────────────────────────
+info:
+  app:
+    name: ${spring.application.name}
+    version: "@project.version@"
+    description: "CineBook API Gateway"
+
+# ── Logging ────────────────────────────────────────────────────────────────
+logging:
+  pattern:
+    level: "%5p [${spring.application.name},%X{traceId:-},%X{spanId:-}]"
+  level:
+    root: INFO
+    org.springframework.cloud.gateway: DEBUG
+    reactor.netty: INFO
