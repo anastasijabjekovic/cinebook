@@ -1,0 +1,162 @@
+# =============================================================================
+# CI — Build, Test & SonarCloud analysis
+#
+# Triggers on every push and pull request to every branch.
+#
+# Required GitHub Secrets:
+#   SONAR_TOKEN  — generate at https://sonarcloud.io/account/security
+#                  Add via: Settings → Secrets → Actions → New repository secret
+#
+# Required pom.xml values to update before first run:
+#   sonar.projectKey   — replace "your-organization_CineBook" with real value
+#   sonar.organization — replace "your-organization" with your SonarCloud org slug
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+# Cancel in-progress runs for the same branch when a new push arrives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '17'
+  # -Xmx prevents OOM in constrained runner; TLSv1.2 avoids handshake issues
+  MAVEN_OPTS: >-
+    -Xmx2048m
+    -Dhttps.protocols=TLSv1.2
+    -Dmaven.repo.local=${{ github.workspace }}/.m2/repository
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1: Build all modules and run unit tests
+  # ---------------------------------------------------------------------------
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          # Full history required by SonarCloud for blame annotations and
+          # new-code detection on pull requests.
+          fetch-depth: 0
+
+      # ------------------------------------------------------------------
+      # Java & Maven setup
+      # setup-java's built-in Maven cache stores ~/.m2/repository keyed on
+      # the hash of all pom.xml files — cache is invalidated on dep changes.
+      # ------------------------------------------------------------------
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      # ------------------------------------------------------------------
+      # Build + unit tests + JaCoCo coverage report
+      # -B           batch mode (no color, CI-friendly output)
+      # clean verify compiles, runs Surefire tests and JaCoCo report phase
+      # ------------------------------------------------------------------
+      - name: Build all modules and run unit tests
+        run: |
+          mvn -B clean verify \
+              --no-transfer-progress \
+              -Dsurefire.useFile=false
+
+      # ------------------------------------------------------------------
+      # Publish JUnit XML results so GitHub shows per-test annotations
+      # on the PR and in the "Actions" tab.
+      # ------------------------------------------------------------------
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: JUnit Results
+          path: '**/target/surefire-reports/TEST-*.xml'
+          reporter: java-junit
+          fail-on-error: false
+
+      # ------------------------------------------------------------------
+      # Upload JaCoCo XML reports as an artifact so the sonar job can
+      # download them without rebuilding the project.
+      # ------------------------------------------------------------------
+      - name: Upload JaCoCo coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jacoco-reports
+          path: '**/target/site/jacoco/jacoco.xml'
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Job 2: SonarCloud static analysis
+  # Runs only after build-and-test succeeds, and only when SONAR_TOKEN is set
+  # (i.e., not on forks where the secret may not be available).
+  # ---------------------------------------------------------------------------
+  sonar-analysis:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    # Skip on forks: secrets are not available and the step would fail anyway.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # SonarCloud SCM sensor needs full history
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      # Download the coverage reports produced by the build job.
+      - name: Download JaCoCo coverage reports
+        uses: actions/download-artifact@v4
+        with:
+          name: jacoco-reports
+
+      # ------------------------------------------------------------------
+      # Compile the project so Sonar can resolve all symbols, but skip
+      # tests (-DskipTests) because they already ran in build-and-test.
+      # ------------------------------------------------------------------
+      - name: Compile project (no tests)
+        run: mvn -B compile --no-transfer-progress -DskipTests
+
+      # ------------------------------------------------------------------
+      # sonar:sonar reads:
+      #   - compiled .class files     (target/classes)
+      #   - JaCoCo XML coverage       (target/site/jacoco/jacoco.xml)
+      #   - Surefire XML test results (target/surefire-reports/)
+      #
+      # SONAR_TOKEN is never interpolated into the shell; it is passed as
+      # an env var and consumed by Maven as -Dsonar.token=${SONAR_TOKEN}.
+      # ------------------------------------------------------------------
+      - name: Run SonarCloud analysis
+        run: |
+          mvn -B sonar:sonar \
+              --no-transfer-progress \
+              -Dsonar.token="${SONAR_TOKEN}"
+        env:
+          # GITHUB_TOKEN allows SonarCloud to post PR decoration comments.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ⚠️  Add SONAR_TOKEN secret to your repository before running this:
+          #     GitHub → Settings → Secrets & Variables → Actions → New secret
+          #     Name:  SONAR_TOKEN
+          #     Value: <token from https://sonarcloud.io/account/security>
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

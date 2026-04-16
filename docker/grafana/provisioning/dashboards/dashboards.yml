@@ -1,0 +1,22 @@
+# =============================================================
+# Grafana dashboard provider provisioning
+# Grafana will auto-load all .json files from this folder.
+# Import recommended dashboards from grafana.com:
+#   - JVM (Micrometer):          https://grafana.com/grafana/dashboards/4701
+#   - Spring Boot Statistics:    https://grafana.com/grafana/dashboards/12900
+#   - RabbitMQ Overview:         https://grafana.com/grafana/dashboards/10991
+# =============================================================
+
+apiVersion: 1
+
+providers:
+  - name: CineBook
+    orgId: 1
+    folder: CineBook
+    folderUid: cinebook
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

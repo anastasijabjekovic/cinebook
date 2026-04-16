@@ -24,10 +24,9 @@ public class RabbitMQConfig {
     }
 
     /**
-     * JSON converter configured with TypePrecendence.INFERRED so that
-     * Spring AMQP resolves the target type from the @RabbitListener method
-     * signature rather than from the __TypeId__ header (which would point
-     * to the booking-service class name).
+     * JSON converter that resolves the target type from the @RabbitListener
+     * method signature rather than from the __TypeId__ header (which would
+     * point to the booking-service class name).
      */
     @Bean
     public Jackson2JsonMessageConverter messageConverter() {
@@ -35,9 +34,6 @@ public class RabbitMQConfig {
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-        Jackson2JsonMessageConverter converter = new Jackson2JsonMessageConverter(om);
-        converter.setTypePrecendence(
-                org.springframework.amqp.support.converter.AbstractJavaTypeMapper.TypePrecendence.INFERRED);
-        return converter;
+        return new Jackson2JsonMessageConverter(om);
     }
 }

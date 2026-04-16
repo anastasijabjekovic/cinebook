@@ -28,11 +28,32 @@
     </modules>
 
     <properties>
-        <java.version>21</java.version>
+        <java.version>17</java.version>
         <spring-cloud.version>2023.0.1</spring-cloud.version>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- ── JaCoCo ─────────────────────────────────────────────────── -->
+        <jacoco.version>0.8.12</jacoco.version>
+        <!-- Wildcard collects reports from every submodule for SonarCloud -->
+        <sonar.coverage.jacoco.xmlReportPaths>
+            ${project.basedir}/../*/target/site/jacoco/jacoco.xml
+        </sonar.coverage.jacoco.xmlReportPaths>
+
+        <!-- ── SonarCloud ─────────────────────────────────────────────── -->
+        <!--
+            Replace these two placeholders with real values from your
+            SonarCloud project:
+              sonar.projectKey   → Administration > Project Key
+              sonar.organization → Your SonarCloud org slug
+        -->
+        <sonar.projectKey>your-organization_CineBook</sonar.projectKey>
+        <sonar.organization>your-organization</sonar.organization>
+        <sonar.host.url>https://sonarcloud.io</sonar.host.url>
+        <sonar.java.source>17</sonar.java.source>
+        <!-- Do not analyse generated sources (target/) -->
+        <sonar.exclusions>**/target/**,**/generated-sources/**</sonar.exclusions>
     </properties>
 
     <dependencyManagement>
@@ -65,6 +86,7 @@
     <build>
         <pluginManagement>
             <plugins>
+                <!-- Spring Boot fat-JAR packaging -->
                 <plugin>
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
@@ -77,7 +99,42 @@
                         </excludes>
                     </configuration>
                 </plugin>
+
+                <!-- JaCoCo – code coverage for every submodule -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                    <executions>
+                        <!-- Attaches JaCoCo agent before tests run -->
+                        <execution>
+                            <id>prepare-agent</id>
+                            <goals><goal>prepare-agent</goal></goals>
+                        </execution>
+                        <!-- Generates XML + HTML report during verify phase -->
+                        <execution>
+                            <id>report</id>
+                            <phase>verify</phase>
+                            <goals><goal>report</goal></goals>
+                        </execution>
+                    </executions>
+                </plugin>
+
+                <!-- SonarCloud scanner -->
+                <plugin>
+                    <groupId>org.sonarsource.scanner.maven</groupId>
+                    <artifactId>sonar-maven-plugin</artifactId>
+                    <version>3.11.0.3922</version>
+                </plugin>
             </plugins>
         </pluginManagement>
+
+        <!-- Activate JaCoCo for all modules (pluginManagement only declares, plugins activates) -->
+        <plugins>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
     </build>
 </project>

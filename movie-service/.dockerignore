@@ -1,0 +1,42 @@
+# ── Build artifacts ────────────────────────────────────────────────────────
+**/target/
+
+# ── Version control ────────────────────────────────────────────────────────
+**/.git/
+**/.gitignore
+**/.gitattributes
+
+# ── IDE & editor files ─────────────────────────────────────────────────────
+**/.idea/
+**/*.iml
+**/*.iws
+**/*.ipr
+**/.vscode/
+**/.settings/
+**/.classpath
+**/.project
+**/.factorypath
+
+# ── OS-generated files ─────────────────────────────────────────────────────
+**/.DS_Store
+**/.DS_Store?
+**/Thumbs.db
+**/ehthumbs.db
+
+# ── Logs ───────────────────────────────────────────────────────────────────
+**/*.log
+**/logs/
+
+# ── Docker files ───────────────────────────────────────────────────────────
+**/Dockerfile
+**/.dockerignore
+
+# ── Test reports ───────────────────────────────────────────────────────────
+**/surefire-reports/
+**/failsafe-reports/
+
+# ── Local environment overrides ────────────────────────────────────────────
+**/application-local.yml
+**/application-local.properties
+**/.env
+**/.env.local

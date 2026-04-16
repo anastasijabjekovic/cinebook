@@ -1,0 +1,77 @@
+# =============================================================
+# Prometheus configuration for CineBook
+# Scrapes the /actuator/prometheus endpoint exposed by every
+# Spring Boot service via micrometer-registry-prometheus.
+# =============================================================
+
+global:
+  scrape_interval:     15s   # How often to scrape targets
+  evaluation_interval: 15s   # How often to evaluate rules
+  scrape_timeout:      10s
+
+  # Attached to every time series collected
+  external_labels:
+    environment: local
+    project:     cinebook
+
+# ── Alerting rules (files) ─────────────────────────────────────────────────
+# rule_files:
+#   - "alerts/*.yml"
+
+# ── Scrape configurations ──────────────────────────────────────────────────
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ── API Gateway ────────────────────────────────────────────
+  - job_name: api-gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['api-gateway:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: api-gateway
+
+  # ── User Service ───────────────────────────────────────────
+  - job_name: user-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['user-service:8081']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: user-service
+
+  # ── Movie Service ──────────────────────────────────────────
+  - job_name: movie-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['movie-service:8082']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: movie-service
+
+  # ── Booking Service ────────────────────────────────────────
+  - job_name: booking-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['booking-service:8083']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: booking-service
+
+  # ── Notification Service ───────────────────────────────────
+  - job_name: notification-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['notification-service:8084']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: notification-service
