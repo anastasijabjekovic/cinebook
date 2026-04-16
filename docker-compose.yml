@@ -1,0 +1,355 @@
+services:
+
+  # ════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE
+  # ════════════════════════════════════════════════════════════
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: cinebook-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: cinebook-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: cinebook-redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  zipkin:
+    image: openzipkin/zipkin:3
+    container_name: cinebook-zipkin
+    ports:
+      - "9411:9411"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9411/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  # ════════════════════════════════════════════════════════════
+  # APPLICATION SERVICES
+  #
+  # EUREKA_CLIENT_ENABLED=false  — no Eureka Server in Compose;
+  #   service-to-service calls use Docker DNS (service names).
+  #
+  # SPRING_APPLICATION_JSON overrides complex nested properties
+  #   that cannot be expressed cleanly as env vars (list of routes,
+  #   static load-balancer instances).
+  # ════════════════════════════════════════════════════════════
+
+  user-service:
+    build:
+      context: .
+      dockerfile: user-service/Dockerfile
+    image: cinebook/user-service:latest
+    container_name: cinebook-user-service
+    environment:
+      SERVER_PORT: 8081
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/cinebook_users
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      ZIPKIN_URL: http://zipkin:9411
+      EUREKA_CLIENT_ENABLED: "false"
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  movie-service:
+    build:
+      context: .
+      dockerfile: movie-service/Dockerfile
+    image: cinebook/movie-service:latest
+    container_name: cinebook-movie-service
+    environment:
+      SERVER_PORT: 8082
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/cinebook_movies
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ZIPKIN_URL: http://zipkin:9411
+      EUREKA_CLIENT_ENABLED: "false"
+      # Configure static LoadBalancer instance so lb://user-service resolves
+      # correctly via Spring Cloud SimpleDiscoveryClient (replaces Eureka).
+      SPRING_APPLICATION_JSON: >-
+        {"spring":{"cloud":{"discovery":{"client":{"simple":{"instances":{
+        "user-service":[{"uri":"http://user-service:8081","serviceId":"user-service"}]}}}}}}}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  booking-service:
+    build:
+      context: .
+      dockerfile: booking-service/Dockerfile
+    image: cinebook/booking-service:latest
+    container_name: cinebook-booking-service
+    environment:
+      SERVER_PORT: 8083
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/cinebook_bookings
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+      ZIPKIN_URL: http://zipkin:9411
+      EUREKA_CLIENT_ENABLED: "false"
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    image: cinebook/notification-service:latest
+    container_name: cinebook-notification-service
+    environment:
+      SERVER_PORT: 8084
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+      ZIPKIN_URL: http://zipkin:9411
+      EUREKA_CLIENT_ENABLED: "false"
+    ports:
+      - "8084:8084"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8084/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    image: cinebook/api-gateway:latest
+    container_name: cinebook-api-gateway
+    environment:
+      SERVER_PORT: 8080
+      ZIPKIN_URL: http://zipkin:9411
+      EUREKA_CLIENT_ENABLED: "false"
+      # Override routes: replace lb:// URIs with direct Docker DNS names.
+      # SPRING_APPLICATION_JSON has higher priority than application.yml
+      # and fully replaces the routes array (no merging of lists).
+      SPRING_APPLICATION_JSON: >-
+        {"spring":{"cloud":{"gateway":{"routes":[
+          {"id":"user-service","uri":"http://user-service:8081",
+           "predicates":["Path=/api/users/**"],"filters":["StripPrefix=1"]},
+          {"id":"movie-service","uri":"http://movie-service:8082",
+           "predicates":["Path=/api/movies/**"],"filters":["StripPrefix=1"]},
+          {"id":"booking-service","uri":"http://booking-service:8083",
+           "predicates":["Path=/api/bookings/**"],"filters":["StripPrefix=1"]},
+          {"id":"notification-service","uri":"http://notification-service:8084",
+           "predicates":["Path=/api/notifications/**"],"filters":["StripPrefix=1"]}
+        ]}}}}
+    ports:
+      - "8080:8080"
+    depends_on:
+      user-service:
+        condition: service_healthy
+      movie-service:
+        condition: service_healthy
+      booking-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  # ════════════════════════════════════════════════════════════
+  # OBSERVABILITY
+  # ════════════════════════════════════════════════════════════
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: cinebook-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle        # allows POST /-/reload to hot-reload config
+      - --web.console.libraries=/etc/prometheus/console_libraries
+      - --web.console.templates=/etc/prometheus/consoles
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: cinebook-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - cinebook-net
+    restart: unless-stopped
+
+# ════════════════════════════════════════════════════════════
+# VOLUMES — named volumes survive container restarts
+# ════════════════════════════════════════════════════════════
+volumes:
+  postgres_data:
+    name: cinebook-postgres-data
+  rabbitmq_data:
+    name: cinebook-rabbitmq-data
+  redis_data:
+    name: cinebook-redis-data
+  prometheus_data:
+    name: cinebook-prometheus-data
+  grafana_data:
+    name: cinebook-grafana-data
+
+# ════════════════════════════════════════════════════════════
+# NETWORK
+# ════════════════════════════════════════════════════════════
+networks:
+  cinebook-net:
+    name: cinebook-net
+    driver: bridge

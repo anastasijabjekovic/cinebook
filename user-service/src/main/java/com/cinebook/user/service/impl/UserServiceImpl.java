@@ -4,6 +4,7 @@ import com.cinebook.user.dto.CreateUserRequest;
 import com.cinebook.user.dto.UserResponse;
 import com.cinebook.user.entity.User;
 import com.cinebook.user.exception.EmailAlreadyExistsException;
+import com.cinebook.user.exception.UserNotFoundException;
 import com.cinebook.user.repository.UserRepository;
 import com.cinebook.user.service.UserService;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +29,15 @@ public class UserServiceImpl implements UserService {
                 .stream()
                 .map(UserResponse::from)
                 .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public UserResponse getUserById(Long id) {
+        log.debug("Fetching user id={}", id);
+        return userRepository.findById(id)
+                .map(UserResponse::from)
+                .orElseThrow(() -> new UserNotFoundException(id));
     }
 
     @Override

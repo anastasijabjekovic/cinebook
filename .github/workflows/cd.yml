@@ -1,0 +1,159 @@
+# =============================================================================
+# CD — Docker Compose smoke-test deployment
+#
+# Triggers when a pull request is merged into the main branch.
+# Builds all Docker images, brings the full stack up, and verifies the
+# API Gateway health endpoint responds with HTTP 200.
+#
+# No external secrets are required — everything runs on the GitHub runner.
+# =============================================================================
+
+name: CD
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+# Only one deployment at a time against the main branch.
+concurrency:
+  group: ${{ github.workflow }}-main
+  cancel-in-progress: false    # do NOT cancel a running deploy; wait for it
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Guard: run only when the PR was actually merged (not just closed/rejected).
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Docker Compose smoke test
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+
+    # Give the full stack enough time to build images and start up.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout merged code
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # Docker Buildx is pre-installed on ubuntu-latest.
+      # Verify versions so they appear in the run log for debugging.
+      # ------------------------------------------------------------------
+      - name: Print Docker & Compose versions
+        run: |
+          docker --version
+          docker compose version
+
+      # ------------------------------------------------------------------
+      # Build every image and start all containers in the background.
+      # The docker-compose.yml depends_on chain ensures infrastructure
+      # is healthy before application services start.
+      # ------------------------------------------------------------------
+      - name: Build Docker images and start services
+        run: |
+          docker compose up --build -d
+        env:
+          # Suppress progress output to keep logs readable.
+          DOCKER_BUILDKIT: 1
+          COMPOSE_DOCKER_CLI_BUILD: 1
+
+      # ------------------------------------------------------------------
+      # Stream container statuses every 30 s while we wait.
+      # This step runs until the health-check step cancels it or completes.
+      # ------------------------------------------------------------------
+      - name: Stream container health status (background)
+        run: |
+          for i in $(seq 1 20); do
+            echo "── Container status (check $i / 20) ──────────────────────────"
+            docker compose ps --format "table {{.Name}}\t{{.Status}}"
+            sleep 30
+          done &
+          echo $! > /tmp/monitor_pid
+
+      # ------------------------------------------------------------------
+      # Poll the API Gateway health endpoint with a 10-minute total budget.
+      # The gateway only becomes healthy after ALL downstream services pass
+      # their own /actuator/health checks, so this single check validates
+      # the entire stack.
+      # ------------------------------------------------------------------
+      - name: Wait for API Gateway to become healthy
+        run: |
+          MAX_ATTEMPTS=20
+          SLEEP_SECONDS=30
+          HEALTH_URL="http://localhost:8080/actuator/health"
+
+          echo "Polling ${HEALTH_URL} (max ${MAX_ATTEMPTS} × ${SLEEP_SECONDS}s = $((MAX_ATTEMPTS * SLEEP_SECONDS))s)"
+
+          for attempt in $(seq 1 ${MAX_ATTEMPTS}); do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || echo "000")
+
+            if [ "${HTTP_STATUS}" = "200" ]; then
+              echo "✅ API Gateway is healthy (attempt ${attempt})"
+              echo "── Health response ───────────────────────────────────────────"
+              curl -s "${HEALTH_URL}" | python3 -m json.tool
+              exit 0
+            fi
+
+            echo "⏳ Attempt ${attempt}/${MAX_ATTEMPTS}: status=${HTTP_STATUS}, retrying in ${SLEEP_SECONDS}s..."
+            sleep ${SLEEP_SECONDS}
+          done
+
+          echo "❌ API Gateway did not become healthy within the allotted time."
+          exit 1
+
+      # ------------------------------------------------------------------
+      # On success: verify the individual service health endpoints too.
+      # ------------------------------------------------------------------
+      - name: Verify individual service health endpoints
+        if: success()
+        run: |
+          declare -A SERVICES=(
+            ["user-service"]="http://localhost:8081/actuator/health"
+            ["movie-service"]="http://localhost:8082/actuator/health"
+            ["booking-service"]="http://localhost:8083/actuator/health"
+            ["notification-service"]="http://localhost:8084/actuator/health"
+          )
+
+          FAILED=0
+          for service in "${!SERVICES[@]}"; do
+            URL="${SERVICES[$service]}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${URL}" || echo "000")
+            if [ "${STATUS}" = "200" ]; then
+              echo "✅ ${service}: ${STATUS}"
+            else
+              echo "❌ ${service}: ${STATUS} — ${URL}"
+              FAILED=1
+            fi
+          done
+
+          exit ${FAILED}
+
+      # ------------------------------------------------------------------
+      # Always dump logs on failure so we can diagnose what went wrong.
+      # ------------------------------------------------------------------
+      - name: Dump service logs on failure
+        if: failure()
+        run: |
+          echo "══════════════════════════════════════════════════════════════"
+          echo "Docker container states:"
+          docker compose ps
+          echo "══════════════════════════════════════════════════════════════"
+          echo "Last 100 lines from each service:"
+          for service in api-gateway user-service movie-service booking-service notification-service postgres rabbitmq redis zipkin; do
+            echo "── ${service} ──────────────────────────────────────────────"
+            docker compose logs --tail=100 "${service}" 2>/dev/null || true
+          done
+
+      # ------------------------------------------------------------------
+      # Always stop and remove containers + anonymous volumes after the job
+      # so the runner disk does not fill up between runs.
+      # ------------------------------------------------------------------
+      - name: Tear down containers
+        if: always()
+        run: |
+          # Kill background monitor if still running
+          [ -f /tmp/monitor_pid ] && kill "$(cat /tmp/monitor_pid)" 2>/dev/null || true
+          docker compose down --volumes --remove-orphans
+          docker system prune -f --volumes

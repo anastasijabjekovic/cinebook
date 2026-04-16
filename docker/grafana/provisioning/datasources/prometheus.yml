@@ -1,0 +1,18 @@
+# =============================================================
+# Grafana datasource auto-provisioning
+# Prometheus is auto-configured as the default datasource
+# so dashboards work out of the box without manual setup.
+# =============================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "15s"     # matches global.scrape_interval in prometheus.yml
+      httpMethod: POST
