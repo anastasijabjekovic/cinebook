@@ -48,8 +48,8 @@
               sonar.projectKey   → Administration > Project Key
               sonar.organization → Your SonarCloud org slug
         -->
-        <sonar.projectKey>your-organization_CineBook</sonar.projectKey>
-        <sonar.organization>your-organization</sonar.organization>
+        <sonar.projectKey>anastasijabjekovic_cinebook</sonar.projectKey>
+        <sonar.organization>anastasijabjekovic</sonar.organization>
         <sonar.host.url>https://sonarcloud.io</sonar.host.url>
         <sonar.java.source>17</sonar.java.source>
         <!-- Do not analyse generated sources (target/) -->
